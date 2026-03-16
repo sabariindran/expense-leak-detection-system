@@ -1,0 +1,34 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Database
+*.db
+*.sqlite3
+
+# AI model (optional – if big)
+*.pkl
+*.joblib
+*.h5
+
+# Node / Expo
+node_modules/
+.expo/
+dist/
+build/
+
+# Mobile Android build
+android/.gradle/
+android/build/
+android/app/build/
+
+# Logs
+*.log
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
