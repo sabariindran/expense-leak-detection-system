@@ -11,14 +11,64 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Colors, Spacing, BorderRadius, FontSize, Shadows } from '../../constants/theme';
 import { makePayment } from '../../services/api';
+import { extractMerchantFromUPI, categorizeMerchant } from '../../services/categorize';
+
+// ─── Parse UPI QR string ──────────────────────────────────────────
+// Standard UPI QR format: upi://pay?pa=merchant@upi&pn=Merchant+Name&am=100
+function parseUPIQR(data: string): { upiId: string; merchant: string; amount: string } {
+    const result = { upiId: '', merchant: '', amount: '' };
+
+    if (data.toLowerCase().startsWith('upi://')) {
+        try {
+            const url = new URL(data);
+            result.upiId = url.searchParams.get('pa') ?? '';
+            result.merchant = url.searchParams.get('pn')?.replace(/\+/g, ' ') ?? '';
+            result.amount = url.searchParams.get('am') ?? '';
+        } catch {
+            // fallback: manual parse
+            const paMatch = data.match(/pa=([^&]+)/);
+            const pnMatch = data.match(/pn=([^&]+)/);
+            const amMatch = data.match(/am=([^&]+)/);
+            if (paMatch) result.upiId = decodeURIComponent(paMatch[1]);
+            if (pnMatch) result.merchant = decodeURIComponent(pnMatch[1]).replace(/\+/g, ' ');
+            if (amMatch) result.amount = decodeURIComponent(amMatch[1]);
+        }
+    } else {
+        // Legacy format: "merchant:amount" or just text
+        const parts = data.split(':');
+        if (parts.length >= 2) {
+            result.merchant = parts[0].trim();
+            result.amount = parts[1].trim();
+        } else {
+            result.merchant = data.trim();
+        }
+    }
+
+    // Fallback merchant extraction from UPI ID
+    if (!result.merchant && result.upiId) {
+        result.merchant = extractMerchantFromUPI(result.upiId);
+    }
+
+    return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// COMPONENT
+// ═══════════════════════════════════════════════════════════════════
 
 export default function ScanScreen() {
+    const params = useLocalSearchParams<{ mode?: string }>();
+    const router = useRouter();
+    const isBillMode = params.mode === 'bill';
+
     const [permission, requestPermission] = useCameraPermissions();
     const [scanned, setScanned] = useState(false);
     const [merchant, setMerchant] = useState('');
     const [amount, setAmount] = useState('');
+    const [category, setCategory] = useState('');
     const [showConfirm, setShowConfirm] = useState(false);
     const [showSuccess, setShowSuccess] = useState(false);
     const [txnId, setTxnId] = useState('');
@@ -26,7 +76,7 @@ export default function ScanScreen() {
     const pulseAnim = useRef(new Animated.Value(1)).current;
 
     useEffect(() => {
-        // Pulse animation for scan frame
+        if (isBillMode) return; // no pulse animation for bill mode
         const pulse = Animated.loop(
             Animated.sequence([
                 Animated.timing(pulseAnim, {
@@ -43,26 +93,20 @@ export default function ScanScreen() {
         );
         pulse.start();
         return () => pulse.stop();
-    }, []);
+    }, [isBillMode]);
 
     const handleBarCodeScanned = ({ data }: { data: string }) => {
         if (scanned) return;
         setScanned(true);
 
-        // Parse QR data — expect format: "merchant:amount" or just use the data
-        const parts = data.split(':');
-        if (parts.length >= 2) {
-            setMerchant(parts[0].trim());
-            setAmount(parts[1].trim());
-        } else {
-            setMerchant(data.trim());
-            setAmount('');
-        }
+        const parsed = parseUPIQR(data);
+        setMerchant(parsed.merchant);
+        setAmount(parsed.amount);
+        setCategory(categorizeMerchant(parsed.merchant));
         setShowConfirm(true);
     };
 
     const handleSimulateScan = () => {
-        // Simulate a QR scan for demo purposes
         const demoMerchants = [
             { name: 'Starbucks', amount: '350' },
             { name: 'Amazon', amount: '1299' },
@@ -73,6 +117,7 @@ export default function ScanScreen() {
         const random = demoMerchants[Math.floor(Math.random() * demoMerchants.length)];
         setMerchant(random.name);
         setAmount(random.amount);
+        setCategory(categorizeMerchant(random.name));
         setScanned(true);
         setShowConfirm(true);
     };
@@ -82,13 +127,12 @@ export default function ScanScreen() {
             Alert.alert('Error', 'Merchant name and amount are required');
             return;
         }
-
         setLoading(true);
         try {
             const result = await makePayment({
                 merchant_name: merchant,
                 amount: parseFloat(amount),
-                payment_method: 'QR',
+                payment_method: 'qr',
             });
             setTxnId(result.transaction_id);
             setShowConfirm(false);
@@ -104,11 +148,49 @@ export default function ScanScreen() {
         setScanned(false);
         setMerchant('');
         setAmount('');
+        setCategory('');
         setShowSuccess(false);
         setTxnId('');
     };
 
-    // Permission not yet determined
+    const goBack = () => {
+        router.back();
+    };
+
+    // ─── Bill Scan Placeholder ────────────────────────────────
+    if (isBillMode) {
+        return (
+            <LinearGradient colors={Colors.gradientDark} style={styles.container}>
+                <View style={styles.billContainer}>
+                    <TouchableOpacity style={styles.backBtn} onPress={goBack}>
+                        <Text style={styles.backBtnText}>← Back</Text>
+                    </TouchableOpacity>
+
+                    <View style={styles.billContent}>
+                        <View style={styles.billIconCircle}>
+                            <Text style={{ fontSize: 56 }}>🧾</Text>
+                        </View>
+                        <Text style={styles.billTitle}>Scan Physical Bill</Text>
+                        <Text style={styles.billDesc}>
+                            Capture bill image to record cash expense using OCR
+                        </Text>
+
+                        <View style={styles.billPlaceholder}>
+                            <View style={styles.billDashed}>
+                                <Text style={styles.billDashedIcon}>📸</Text>
+                                <Text style={styles.billDashedText}>
+                                    Tap to capture bill image
+                                </Text>
+                                <Text style={styles.billComingSoon}>Coming Soon</Text>
+                            </View>
+                        </View>
+                    </View>
+                </View>
+            </LinearGradient>
+        );
+    }
+
+    // ─── Permission not yet determined ────────────────────────
     if (!permission) {
         return (
             <View style={styles.center}>
@@ -117,11 +199,15 @@ export default function ScanScreen() {
         );
     }
 
-    // Permission denied
+    // ─── Permission denied ────────────────────────────────────
     if (!permission.granted) {
         return (
             <LinearGradient colors={Colors.gradientDark} style={styles.container}>
                 <View style={styles.permContainer}>
+                    <TouchableOpacity style={styles.backBtn} onPress={goBack}>
+                        <Text style={styles.backBtnText}>← Back</Text>
+                    </TouchableOpacity>
+
                     <Text style={styles.permIcon}>📷</Text>
                     <Text style={styles.permTitle}>Camera Access Required</Text>
                     <Text style={styles.permDesc}>
@@ -143,6 +229,7 @@ export default function ScanScreen() {
         );
     }
 
+    // ─── Camera QR Scanner ────────────────────────────────────
     return (
         <View style={styles.container}>
             <CameraView
@@ -152,13 +239,15 @@ export default function ScanScreen() {
                 }}
                 onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
             >
-                {/* Overlay */}
                 <LinearGradient
                     colors={['rgba(10,14,26,0.8)', 'transparent', 'rgba(10,14,26,0.8)']}
                     style={styles.overlay}
                 >
                     {/* Header */}
                     <View style={styles.scanHeader}>
+                        <TouchableOpacity onPress={goBack}>
+                            <Text style={styles.scanBackText}>← Back</Text>
+                        </TouchableOpacity>
                         <Text style={styles.scanTitle}>Scan QR Code</Text>
                         <Text style={styles.scanSubtitle}>
                             Point camera at a payment QR code
@@ -209,16 +298,26 @@ export default function ScanScreen() {
             <Modal visible={showConfirm} transparent animationType="slide">
                 <View style={styles.modalOverlay}>
                     <View style={styles.modalCard}>
-                        <Text style={styles.modalTitle}>Confirm Payment</Text>
+                        <Text style={styles.modalTitle}>Confirm QR Payment</Text>
 
                         <View style={styles.confirmField}>
                             <Text style={styles.confirmLabel}>Merchant</Text>
                             <TextInput
                                 style={styles.confirmInput}
                                 value={merchant}
-                                onChangeText={setMerchant}
+                                onChangeText={(v) => {
+                                    setMerchant(v);
+                                    setCategory(categorizeMerchant(v));
+                                }}
                                 placeholderTextColor={Colors.textMuted}
                             />
+                        </View>
+
+                        <View style={styles.confirmField}>
+                            <Text style={styles.confirmLabel}>Category</Text>
+                            <View style={styles.categoryBadge}>
+                                <Text style={styles.categoryBadgeText}>{category}</Text>
+                            </View>
                         </View>
 
                         <View style={styles.confirmField}>
@@ -229,6 +328,7 @@ export default function ScanScreen() {
                                 onChangeText={setAmount}
                                 keyboardType="numeric"
                                 placeholderTextColor={Colors.textMuted}
+                                placeholder="Enter amount"
                             />
                         </View>
 
@@ -259,7 +359,7 @@ export default function ScanScreen() {
                                     style={styles.confirmGradient}
                                 >
                                     <Text style={styles.confirmText}>
-                                        {loading ? 'Processing...' : 'Confirm Pay'}
+                                        {loading ? 'Processing...' : '✓ Confirm Pay'}
                                     </Text>
                                 </LinearGradient>
                             </TouchableOpacity>
@@ -279,9 +379,12 @@ export default function ScanScreen() {
                         <Text style={styles.successTxn}>TXN: {txnId}</Text>
                         <TouchableOpacity
                             style={styles.doneBtn}
-                            onPress={resetScanner}
+                            onPress={() => {
+                                resetScanner();
+                                goBack();
+                            }}
                         >
-                            <Text style={styles.doneBtnText}>Scan Another</Text>
+                            <Text style={styles.doneBtnText}>Done</Text>
                         </TouchableOpacity>
                     </View>
                 </View>
@@ -289,6 +392,10 @@ export default function ScanScreen() {
         </View>
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// STYLES
+// ═══════════════════════════════════════════════════════════════════
 
 const styles = StyleSheet.create({
     container: {
@@ -310,8 +417,29 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         paddingVertical: 60,
     },
+
+    // ── Back button ───────────────────────────────────────────
+    backBtn: {
+        alignSelf: 'flex-start',
+        paddingHorizontal: Spacing.lg,
+        paddingTop: 60,
+        paddingBottom: Spacing.md,
+    },
+    backBtnText: {
+        color: Colors.primary,
+        fontSize: FontSize.md,
+        fontWeight: '600',
+    },
+
+    // ── Scan header ───────────────────────────────────────────
     scanHeader: {
         alignItems: 'center',
+    },
+    scanBackText: {
+        color: '#FFFFFF',
+        fontSize: FontSize.md,
+        fontWeight: '600',
+        marginBottom: Spacing.md,
     },
     scanTitle: {
         fontSize: FontSize.xxl,
@@ -389,7 +517,8 @@ const styles = StyleSheet.create({
         color: Colors.textSecondary,
         fontSize: FontSize.md,
     },
-    // Permission Screen
+
+    // ── Permission Screen ─────────────────────────────────────
     permContainer: {
         flex: 1,
         justifyContent: 'center',
@@ -437,7 +566,73 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: Colors.primary,
     },
-    // Modals
+
+    // ── Bill Scan Placeholder ─────────────────────────────────
+    billContainer: {
+        flex: 1,
+    },
+    billContent: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: Spacing.xl,
+    },
+    billIconCircle: {
+        width: 100,
+        height: 100,
+        borderRadius: 50,
+        backgroundColor: Colors.warning + '15',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: Spacing.lg,
+    },
+    billTitle: {
+        fontSize: FontSize.xl,
+        fontWeight: '700',
+        color: Colors.textPrimary,
+        marginBottom: Spacing.sm,
+    },
+    billDesc: {
+        fontSize: FontSize.md,
+        color: Colors.textSecondary,
+        textAlign: 'center',
+        marginBottom: Spacing.xl,
+        lineHeight: 22,
+    },
+    billPlaceholder: {
+        width: '100%',
+        maxWidth: 300,
+    },
+    billDashed: {
+        borderWidth: 2,
+        borderStyle: 'dashed',
+        borderColor: Colors.borderLight,
+        borderRadius: BorderRadius.lg,
+        padding: Spacing.xl,
+        alignItems: 'center',
+        backgroundColor: Colors.surface,
+    },
+    billDashedIcon: {
+        fontSize: 40,
+        marginBottom: Spacing.md,
+    },
+    billDashedText: {
+        fontSize: FontSize.md,
+        color: Colors.textSecondary,
+        marginBottom: Spacing.sm,
+    },
+    billComingSoon: {
+        fontSize: FontSize.sm,
+        color: Colors.warning,
+        fontWeight: '700',
+        backgroundColor: Colors.warning + '20',
+        paddingHorizontal: Spacing.md,
+        paddingVertical: Spacing.xs,
+        borderRadius: BorderRadius.full,
+        overflow: 'hidden',
+    },
+
+    // ── Modals ────────────────────────────────────────────────
     modalOverlay: {
         flex: 1,
         backgroundColor: 'rgba(0,0,0,0.7)',
@@ -476,6 +671,18 @@ const styles = StyleSheet.create({
         fontSize: FontSize.md,
         borderWidth: 1,
         borderColor: Colors.border,
+    },
+    categoryBadge: {
+        backgroundColor: Colors.info + '20',
+        paddingHorizontal: Spacing.md,
+        paddingVertical: Spacing.xs,
+        borderRadius: BorderRadius.full,
+        alignSelf: 'flex-start',
+    },
+    categoryBadgeText: {
+        color: Colors.info,
+        fontSize: FontSize.sm,
+        fontWeight: '700',
     },
     methodBadge: {
         backgroundColor: Colors.success + '20',
@@ -521,7 +728,8 @@ const styles = StyleSheet.create({
         fontSize: FontSize.md,
         fontWeight: '700',
     },
-    // Success
+
+    // ── Success ───────────────────────────────────────────────
     successCircle: {
         width: 72,
         height: 72,

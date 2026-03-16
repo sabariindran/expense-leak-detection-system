@@ -4,9 +4,9 @@ import { Platform } from 'react-native';
 // Android emulator uses 10.0.2.2 to reach host localhost
 // iOS simulator and web can use localhost directly
 const BASE_URL = Platform.select({
-    android: 'http://10.0.192.168.1.6.2:8000',
-    ios: 'http://192.168.1.6:8000',
-    default: 'http://192.168.1.6:8000',
+    android: 'http://192.168.1.7:8000',
+    ios: 'http://192.168.1.7:8000',
+    default: 'http://192.168.1.7:8000',
 });
 
 const api = axios.create({
@@ -60,6 +60,7 @@ export interface PaymentRequest {
     amount: number;
     payment_method: string;
     upi_id?: string;
+    description?: string;
 }
 
 export interface PaymentResponse {

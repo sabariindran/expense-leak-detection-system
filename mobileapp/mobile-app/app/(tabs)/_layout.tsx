@@ -31,15 +31,6 @@ export default function TabLayout() {
       }}
     >
       <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Dashboard',
-          tabBarIcon: ({ focused }) => (
-            <TabIcon emoji="📊" label="Home" focused={focused} />
-          ),
-        }}
-      />
-      <Tabs.Screen
         name="pay"
         options={{
           title: 'Pay',
@@ -49,11 +40,11 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="scan"
+        name="index"
         options={{
-          title: 'Scan',
+          title: 'Dashboard',
           tabBarIcon: ({ focused }) => (
-            <TabIcon emoji="📷" label="Scan" focused={focused} />
+            <TabIcon emoji="📊" label="Home" focused={focused} />
           ),
         }}
       />
@@ -64,6 +55,13 @@ export default function TabLayout() {
           tabBarIcon: ({ focused }) => (
             <TabIcon emoji="📋" label="History" focused={focused} />
           ),
+        }}
+      />
+      {/* Scan screen is hidden from tabs — invoked from Pay screen */}
+      <Tabs.Screen
+        name="scan"
+        options={{
+          href: null,
         }}
       />
     </Tabs>
