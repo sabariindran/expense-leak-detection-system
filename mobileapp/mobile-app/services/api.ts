@@ -4,9 +4,9 @@ import { Platform } from 'react-native';
 // Android emulator uses 10.0.2.2 to reach host localhost
 // iOS simulator and web can use localhost directly
 const BASE_URL = Platform.select({
-    android: 'http://192.168.1.7:8000',
-    ios: 'http://192.168.1.7:8000',
-    default: 'http://192.168.1.7:8000',
+    android: 'http://192.168.1.5:8000',
+    ios: 'http://192.168.1.5:8000',
+    default: 'http://192.168.1.5:8000',
 });
 
 const api = axios.create({
@@ -68,6 +68,12 @@ export interface PaymentResponse {
     transaction_id: string;
 }
 
+export interface OcrResult {
+    merchant: string;
+    total_amount: number;
+    items: string[];
+}
+
 // ===========================
 // API Functions
 // ===========================
@@ -84,6 +90,21 @@ export async function getTransactions(): Promise<Transaction[]> {
 
 export async function makePayment(data: PaymentRequest): Promise<PaymentResponse> {
     const response = await api.post<PaymentResponse>('/pay', data);
+    return response.data;
+}
+
+export async function scanBill(imageUri: string): Promise<OcrResult> {
+    const formData = new FormData();
+    formData.append('file', {
+        uri: imageUri,
+        name: 'bill.jpg',
+        type: 'image/jpeg',
+    } as any);
+
+    const response = await api.post<OcrResult>('/ocr-scan', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 30000,
+    });
     return response.data;
 }
 

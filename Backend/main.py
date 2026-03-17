@@ -179,3 +179,20 @@ def get_dashboard():
         "spending_by_merchant": spending_by_merchant,
         "monthly_trend": monthly_trend
     }
+
+
+from fastapi import File, UploadFile
+import shutil
+from ocr_service import process_bill
+
+@app.post("/ocr-scan")
+async def ocr_scan(file: UploadFile = File(...)):
+
+    file_location = f"temp_{file.filename}"
+
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    data = process_bill(file_location)
+
+    return data

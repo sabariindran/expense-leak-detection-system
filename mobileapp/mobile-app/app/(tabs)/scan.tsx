@@ -8,12 +8,14 @@ import {
     Modal,
     Animated,
     Alert,
+    ActivityIndicator,
+    ScrollView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Colors, Spacing, BorderRadius, FontSize, Shadows } from '../../constants/theme';
-import { makePayment } from '../../services/api';
+import { makePayment, scanBill } from '../../services/api';
 import { extractMerchantFromUPI, categorizeMerchant } from '../../services/categorize';
 
 // ─── Parse UPI QR string ──────────────────────────────────────────
@@ -73,6 +75,14 @@ export default function ScanScreen() {
     const [showSuccess, setShowSuccess] = useState(false);
     const [txnId, setTxnId] = useState('');
     const [loading, setLoading] = useState(false);
+
+    // ── Bill-mode state ──────────────────────────────────────────
+    type BillPhase = 'idle' | 'scanning' | 'confirm' | 'error' | 'success';
+    const [billPhase, setBillPhase] = useState<BillPhase>('idle');
+    const [billItems, setBillItems] = useState<string[]>([]);
+    const [billLoading, setBillLoading] = useState(false);
+    const [billTxnId, setBillTxnId] = useState('');
+    const billCameraRef = useRef<any>(null);
     const pulseAnim = useRef(new Animated.Value(1)).current;
 
     useEffect(() => {
@@ -157,36 +167,397 @@ export default function ScanScreen() {
         router.back();
     };
 
-    // ─── Bill Scan Placeholder ────────────────────────────────
+    // ─── Bill-mode helpers ─────────────────────────────────────
+    const handleCaptureBill = async () => {
+        if (!billCameraRef.current) return;
+        try {
+            const photo = await billCameraRef.current.takePictureAsync({
+                quality: 0.7,
+                base64: false,
+            });
+            setBillPhase('scanning');
+            setBillLoading(true);
+
+            try {
+                const ocrResult = await scanBill(photo.uri);
+
+                if (!ocrResult.merchant && !ocrResult.total_amount) {
+                    setBillPhase('error');
+                    return;
+                }
+
+                setMerchant(ocrResult.merchant || '');
+                setAmount(ocrResult.total_amount ? String(ocrResult.total_amount) : '');
+                setCategory(categorizeMerchant(ocrResult.merchant || ''));
+                setBillItems(ocrResult.items || []);
+                setBillPhase('confirm');
+            } catch {
+                setBillPhase('error');
+            } finally {
+                setBillLoading(false);
+            }
+        } catch {
+            Alert.alert('Error', 'Failed to capture image. Please try again.');
+        }
+    };
+
+    const handleConfirmBill = async () => {
+        if (!merchant.trim() || !amount.trim()) {
+            Alert.alert('Error', 'Merchant name and amount are required');
+            return;
+        }
+        setBillLoading(true);
+        try {
+            const result = await makePayment({
+                merchant_name: merchant,
+                amount: parseFloat(amount),
+                payment_method: 'cash',
+            });
+            setBillTxnId(result.transaction_id);
+            setBillPhase('success');
+        } catch {
+            Alert.alert('Error', 'Failed to save transaction. Check backend connection.');
+        } finally {
+            setBillLoading(false);
+        }
+    };
+
+    const resetBill = () => {
+        setBillPhase('idle');
+        setMerchant('');
+        setAmount('');
+        setCategory('');
+        setBillItems([]);
+        setBillTxnId('');
+    };
+
+    // ─── Bill Scan Flow ──────────────────────────────────────
     if (isBillMode) {
-        return (
-            <LinearGradient colors={Colors.gradientDark} style={styles.container}>
-                <View style={styles.billContainer}>
-                    <TouchableOpacity style={styles.backBtn} onPress={goBack}>
-                        <Text style={styles.backBtnText}>← Back</Text>
-                    </TouchableOpacity>
-
-                    <View style={styles.billContent}>
-                        <View style={styles.billIconCircle}>
-                            <Text style={{ fontSize: 56 }}>🧾</Text>
-                        </View>
-                        <Text style={styles.billTitle}>Scan Physical Bill</Text>
-                        <Text style={styles.billDesc}>
-                            Capture bill image to record cash expense using OCR
-                        </Text>
-
-                        <View style={styles.billPlaceholder}>
-                            <View style={styles.billDashed}>
-                                <Text style={styles.billDashedIcon}>📸</Text>
-                                <Text style={styles.billDashedText}>
-                                    Tap to capture bill image
-                                </Text>
-                                <Text style={styles.billComingSoon}>Coming Soon</Text>
-                            </View>
-                        </View>
-                    </View>
+        // ── Permission not yet determined
+        if (!permission) {
+            return (
+                <View style={styles.center}>
+                    <ActivityIndicator size="large" color={Colors.primary} />
+                    <Text style={[styles.permText, { marginTop: Spacing.md }]}>
+                        Requesting camera permission...
+                    </Text>
                 </View>
-            </LinearGradient>
+            );
+        }
+
+        // ── Permission denied
+        if (!permission.granted) {
+            return (
+                <LinearGradient colors={Colors.gradientDark} style={styles.container}>
+                    <View style={styles.permContainer}>
+                        <TouchableOpacity style={styles.backBtn} onPress={goBack}>
+                            <Text style={styles.backBtnText}>← Back</Text>
+                        </TouchableOpacity>
+                        <Text style={styles.permIcon}>📷</Text>
+                        <Text style={styles.permTitle}>Camera Access Required</Text>
+                        <Text style={styles.permDesc}>
+                            SmartSpend needs camera access to scan bills for OCR.
+                        </Text>
+                        <TouchableOpacity style={styles.permButton} onPress={requestPermission}>
+                            <Text style={styles.permButtonText}>Grant Permission</Text>
+                        </TouchableOpacity>
+                    </View>
+                </LinearGradient>
+            );
+        }
+
+        // ── Scanning / Loading overlay
+        if (billPhase === 'scanning') {
+            return (
+                <LinearGradient colors={Colors.gradientDark} style={styles.container}>
+                    <View style={styles.billScanningOverlay}>
+                        <ActivityIndicator size="large" color={Colors.primary} />
+                        <Text style={styles.billScanningText}>Scanning bill...</Text>
+                        <Text style={styles.billScanningSubtext}>
+                            Extracting merchant, amount and items
+                        </Text>
+                    </View>
+                </LinearGradient>
+            );
+        }
+
+        // ── Confirmation UI
+        if (billPhase === 'confirm') {
+            return (
+                <LinearGradient colors={Colors.gradientDark} style={styles.container}>
+                    <View style={styles.billContainer}>
+                        <TouchableOpacity style={styles.backBtn} onPress={() => { resetBill(); goBack(); }}>
+                            <Text style={styles.backBtnText}>← Back</Text>
+                        </TouchableOpacity>
+
+                        <ScrollView
+                            style={styles.billScrollView}
+                            contentContainerStyle={styles.billScrollContent}
+                            showsVerticalScrollIndicator={false}
+                        >
+                            <View style={styles.billResultHeader}>
+                                <View style={styles.billIconCircle}>
+                                    <Text style={{ fontSize: 40 }}>✅</Text>
+                                </View>
+                                <Text style={styles.billTitle}>Bill Scanned</Text>
+                                <Text style={styles.billDesc}>Review and confirm the detected details</Text>
+                            </View>
+
+                            <View style={styles.billConfirmCard}>
+                                <View style={styles.confirmField}>
+                                    <Text style={styles.confirmLabel}>Merchant</Text>
+                                    <TextInput
+                                        style={styles.confirmInput}
+                                        value={merchant}
+                                        onChangeText={(v) => {
+                                            setMerchant(v);
+                                            setCategory(categorizeMerchant(v));
+                                        }}
+                                        placeholderTextColor={Colors.textMuted}
+                                        placeholder="Merchant name"
+                                    />
+                                </View>
+
+                                <View style={styles.confirmField}>
+                                    <Text style={styles.confirmLabel}>Amount (₹)</Text>
+                                    <TextInput
+                                        style={styles.confirmInput}
+                                        value={amount}
+                                        onChangeText={setAmount}
+                                        keyboardType="numeric"
+                                        placeholderTextColor={Colors.textMuted}
+                                        placeholder="Enter amount"
+                                    />
+                                </View>
+
+                                <View style={styles.confirmField}>
+                                    <Text style={styles.confirmLabel}>Category</Text>
+                                    <View style={styles.categoryBadge}>
+                                        <Text style={styles.categoryBadgeText}>{category}</Text>
+                                    </View>
+                                </View>
+
+                                <View style={styles.confirmField}>
+                                    <Text style={styles.confirmLabel}>Payment Method</Text>
+                                    <View style={[styles.methodBadge, { backgroundColor: Colors.warning + '20' }]}>
+                                        <Text style={[styles.methodBadgeText, { color: Colors.warning }]}>💵 Cash</Text>
+                                    </View>
+                                </View>
+
+                                {billItems.length > 0 && (
+                                    <View style={styles.confirmField}>
+                                        <Text style={styles.confirmLabel}>
+                                            Items Detected ({billItems.length})
+                                        </Text>
+                                        <View style={styles.billItemsList}>
+                                            {billItems.map((item, idx) => (
+                                                <View key={idx} style={styles.billItemRow}>
+                                                    <Text style={styles.billItemBullet}>•</Text>
+                                                    <Text style={styles.billItemText}>{item}</Text>
+                                                </View>
+                                            ))}
+                                        </View>
+                                    </View>
+                                )}
+                            </View>
+
+                            <View style={styles.billConfirmActions}>
+                                <TouchableOpacity
+                                    style={styles.confirmBtn}
+                                    onPress={handleConfirmBill}
+                                    disabled={billLoading}
+                                    activeOpacity={0.8}
+                                >
+                                    <LinearGradient
+                                        colors={Colors.gradientSuccess}
+                                        style={styles.confirmGradient}
+                                    >
+                                        <Text style={styles.confirmText}>
+                                            {billLoading ? 'Saving...' : '✓ Confirm Transaction'}
+                                        </Text>
+                                    </LinearGradient>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    style={styles.billEditBtn}
+                                    onPress={() => setBillPhase('idle')}
+                                    activeOpacity={0.8}
+                                >
+                                    <Text style={styles.billEditBtnText}>📸 Rescan</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </ScrollView>
+                    </View>
+                </LinearGradient>
+            );
+        }
+
+        // ── Error / Fallback
+        if (billPhase === 'error') {
+            return (
+                <LinearGradient colors={Colors.gradientDark} style={styles.container}>
+                    <View style={styles.billContainer}>
+                        <TouchableOpacity style={styles.backBtn} onPress={() => { resetBill(); goBack(); }}>
+                            <Text style={styles.backBtnText}>← Back</Text>
+                        </TouchableOpacity>
+
+                        <ScrollView
+                            style={styles.billScrollView}
+                            contentContainerStyle={styles.billScrollContent}
+                            showsVerticalScrollIndicator={false}
+                        >
+                            <View style={styles.billResultHeader}>
+                                <View style={[styles.billIconCircle, { backgroundColor: Colors.danger + '15' }]}>
+                                    <Text style={{ fontSize: 40 }}>⚠️</Text>
+                                </View>
+                                <Text style={styles.billTitle}>Scan Failed</Text>
+                                <Text style={styles.billDesc}>
+                                    Could not detect bill clearly. Please enter details manually.
+                                </Text>
+                            </View>
+
+                            <View style={styles.billConfirmCard}>
+                                <View style={styles.confirmField}>
+                                    <Text style={styles.confirmLabel}>Merchant</Text>
+                                    <TextInput
+                                        style={styles.confirmInput}
+                                        value={merchant}
+                                        onChangeText={(v) => {
+                                            setMerchant(v);
+                                            setCategory(categorizeMerchant(v));
+                                        }}
+                                        placeholderTextColor={Colors.textMuted}
+                                        placeholder="Enter merchant name"
+                                    />
+                                </View>
+
+                                <View style={styles.confirmField}>
+                                    <Text style={styles.confirmLabel}>Amount (₹)</Text>
+                                    <TextInput
+                                        style={styles.confirmInput}
+                                        value={amount}
+                                        onChangeText={setAmount}
+                                        keyboardType="numeric"
+                                        placeholderTextColor={Colors.textMuted}
+                                        placeholder="Enter amount"
+                                    />
+                                </View>
+
+                                <View style={styles.confirmField}>
+                                    <Text style={styles.confirmLabel}>Category</Text>
+                                    <View style={styles.categoryBadge}>
+                                        <Text style={styles.categoryBadgeText}>
+                                            {category || 'Others'}
+                                        </Text>
+                                    </View>
+                                </View>
+                            </View>
+
+                            <View style={styles.billConfirmActions}>
+                                <TouchableOpacity
+                                    style={styles.confirmBtn}
+                                    onPress={handleConfirmBill}
+                                    disabled={billLoading || !merchant.trim() || !amount.trim()}
+                                    activeOpacity={0.8}
+                                >
+                                    <LinearGradient
+                                        colors={Colors.gradientSuccess}
+                                        style={[
+                                            styles.confirmGradient,
+                                            (!merchant.trim() || !amount.trim()) && { opacity: 0.5 },
+                                        ]}
+                                    >
+                                        <Text style={styles.confirmText}>
+                                            {billLoading ? 'Saving...' : '✓ Save Transaction'}
+                                        </Text>
+                                    </LinearGradient>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    style={styles.billEditBtn}
+                                    onPress={resetBill}
+                                    activeOpacity={0.8}
+                                >
+                                    <Text style={styles.billEditBtnText}>📸 Try Again</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </ScrollView>
+                    </View>
+                </LinearGradient>
+            );
+        }
+
+        // ── Success
+        if (billPhase === 'success') {
+            return (
+                <LinearGradient colors={Colors.gradientDark} style={styles.container}>
+                    <View style={styles.billScanningOverlay}>
+                        <View style={styles.successCircle}>
+                            <Text style={styles.successEmoji}>✅</Text>
+                        </View>
+                        <Text style={styles.successTitle}>Transaction Saved!</Text>
+                        <Text style={styles.successTxn}>TXN: {billTxnId}</Text>
+                        <Text style={styles.billSuccessDetail}>
+                            {merchant} — ₹{amount}
+                        </Text>
+                        <TouchableOpacity
+                            style={[styles.doneBtn, { width: '80%', marginTop: Spacing.lg }]}
+                            onPress={() => { resetBill(); goBack(); }}
+                        >
+                            <Text style={styles.doneBtnText}>Done</Text>
+                        </TouchableOpacity>
+                    </View>
+                </LinearGradient>
+            );
+        }
+
+        // ── Camera viewfinder (idle)
+        return (
+            <View style={styles.container}>
+                <CameraView
+                    ref={billCameraRef}
+                    style={styles.camera}
+                >
+                    <LinearGradient
+                        colors={['rgba(10,14,26,0.8)', 'transparent', 'rgba(10,14,26,0.85)']}
+                        style={styles.overlay}
+                    >
+                        {/* Header */}
+                        <View style={styles.scanHeader}>
+                            <TouchableOpacity onPress={goBack}>
+                                <Text style={styles.scanBackText}>← Back</Text>
+                            </TouchableOpacity>
+                            <Text style={styles.scanTitle}>Scan Bill</Text>
+                            <Text style={styles.scanSubtitle}>
+                                Position the bill within the frame
+                            </Text>
+                        </View>
+
+                        {/* Bill Frame */}
+                        <View style={styles.billFrame}>
+                            <View style={[styles.corner, styles.topLeft]} />
+                            <View style={[styles.corner, styles.topRight]} />
+                            <View style={[styles.corner, styles.bottomLeft]} />
+                            <View style={[styles.corner, styles.bottomRight]} />
+                            <Text style={styles.billFrameHint}>🧾</Text>
+                        </View>
+
+                        {/* Capture button */}
+                        <View style={styles.bottomArea}>
+                            <TouchableOpacity
+                                style={styles.captureButton}
+                                onPress={handleCaptureBill}
+                                activeOpacity={0.7}
+                            >
+                                <View style={styles.captureOuter}>
+                                    <View style={styles.captureInner} />
+                                </View>
+                            </TouchableOpacity>
+                            <Text style={styles.captureHint}>Tap to capture</Text>
+                        </View>
+                    </LinearGradient>
+                </CameraView>
+            </View>
         );
     }
 
@@ -567,69 +938,145 @@ const styles = StyleSheet.create({
         borderColor: Colors.primary,
     },
 
-    // ── Bill Scan Placeholder ─────────────────────────────────
+    // ── Bill Scan ──────────────────────────────────────────────
     billContainer: {
         flex: 1,
     },
-    billContent: {
+    billScrollView: {
         flex: 1,
-        justifyContent: 'center',
-        alignItems: 'center',
-        padding: Spacing.xl,
     },
-    billIconCircle: {
-        width: 100,
-        height: 100,
-        borderRadius: 50,
-        backgroundColor: Colors.warning + '15',
-        justifyContent: 'center',
+    billScrollContent: {
+        padding: Spacing.lg,
+        paddingBottom: Spacing.xxl,
+    },
+    billResultHeader: {
         alignItems: 'center',
         marginBottom: Spacing.lg,
+    },
+    billIconCircle: {
+        width: 80,
+        height: 80,
+        borderRadius: 40,
+        backgroundColor: Colors.success + '15',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: Spacing.md,
     },
     billTitle: {
         fontSize: FontSize.xl,
         fontWeight: '700',
         color: Colors.textPrimary,
-        marginBottom: Spacing.sm,
+        marginBottom: Spacing.xs,
     },
     billDesc: {
         fontSize: FontSize.md,
         color: Colors.textSecondary,
         textAlign: 'center',
-        marginBottom: Spacing.xl,
         lineHeight: 22,
     },
-    billPlaceholder: {
-        width: '100%',
-        maxWidth: 300,
-    },
-    billDashed: {
-        borderWidth: 2,
-        borderStyle: 'dashed',
-        borderColor: Colors.borderLight,
-        borderRadius: BorderRadius.lg,
-        padding: Spacing.xl,
-        alignItems: 'center',
+    billConfirmCard: {
         backgroundColor: Colors.surface,
+        borderRadius: BorderRadius.lg,
+        padding: Spacing.lg,
+        borderWidth: 1,
+        borderColor: Colors.borderLight,
+        marginBottom: Spacing.lg,
     },
-    billDashedIcon: {
-        fontSize: 40,
-        marginBottom: Spacing.md,
+    billItemsList: {
+        backgroundColor: Colors.surfaceLight,
+        borderRadius: BorderRadius.md,
+        padding: Spacing.md,
+        maxHeight: 150,
     },
-    billDashedText: {
+    billItemRow: {
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        marginBottom: Spacing.xs,
+    },
+    billItemBullet: {
+        color: Colors.primary,
+        fontSize: FontSize.md,
+        marginRight: Spacing.sm,
+        lineHeight: 20,
+    },
+    billItemText: {
+        color: Colors.textSecondary,
+        fontSize: FontSize.sm,
+        flex: 1,
+        lineHeight: 20,
+    },
+    billConfirmActions: {
+        gap: Spacing.md,
+    },
+    billEditBtn: {
+        height: 50,
+        borderRadius: BorderRadius.md,
+        justifyContent: 'center',
+        alignItems: 'center',
+        backgroundColor: Colors.surfaceLight,
+        borderWidth: 1,
+        borderColor: Colors.borderLight,
+    },
+    billEditBtnText: {
+        color: Colors.textSecondary,
+        fontSize: FontSize.md,
+        fontWeight: '600',
+    },
+    billScanningOverlay: {
+        flex: 1,
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: Spacing.xl,
+    },
+    billScanningText: {
+        fontSize: FontSize.xl,
+        fontWeight: '700',
+        color: Colors.textPrimary,
+        marginTop: Spacing.lg,
+    },
+    billScanningSubtext: {
+        fontSize: FontSize.sm,
+        color: Colors.textSecondary,
+        marginTop: Spacing.sm,
+    },
+    billSuccessDetail: {
         fontSize: FontSize.md,
         color: Colors.textSecondary,
-        marginBottom: Spacing.sm,
+        marginTop: Spacing.sm,
     },
-    billComingSoon: {
+    billFrame: {
+        width: 280,
+        height: 200,
+        position: 'relative',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    billFrameHint: {
+        fontSize: 48,
+        opacity: 0.3,
+    },
+    captureButton: {
+        alignItems: 'center',
+    },
+    captureOuter: {
+        width: 72,
+        height: 72,
+        borderRadius: 36,
+        borderWidth: 4,
+        borderColor: '#FFFFFF',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    captureInner: {
+        width: 58,
+        height: 58,
+        borderRadius: 29,
+        backgroundColor: '#FFFFFF',
+    },
+    captureHint: {
+        color: 'rgba(255,255,255,0.6)',
         fontSize: FontSize.sm,
-        color: Colors.warning,
-        fontWeight: '700',
-        backgroundColor: Colors.warning + '20',
-        paddingHorizontal: Spacing.md,
-        paddingVertical: Spacing.xs,
-        borderRadius: BorderRadius.full,
-        overflow: 'hidden',
+        marginTop: Spacing.sm,
     },
 
     // ── Modals ────────────────────────────────────────────────
