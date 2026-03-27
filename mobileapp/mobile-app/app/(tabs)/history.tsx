@@ -105,6 +105,18 @@ export default function HistoryScreen() {
                 ))}
             </ScrollView>
 
+            {/* Category Total Banner */}
+            {selectedCategory !== 'All' && (
+                <View style={styles.categoryTotalBanner}>
+                    <Text style={styles.categoryTotalText}>
+                        {selectedCategory} Total:{' '}
+                        <Text style={styles.categoryTotalAmount}>
+                            ₹{totalFiltered.toLocaleString('en-IN')}
+                        </Text>
+                    </Text>
+                </View>
+            )}
+
             {error ? (
                 <View style={styles.errorCard}>
                     <Text style={styles.errorText}>⚠️ {error}</Text>
@@ -193,6 +205,8 @@ const styles = StyleSheet.create({
         backgroundColor: Colors.surface,
         borderWidth: 1,
         borderColor: Colors.border,
+        minWidth: 56,
+        alignItems: 'center',
     },
     chipActive: {
         backgroundColor: Colors.primary + '20',
@@ -204,6 +218,25 @@ const styles = StyleSheet.create({
         fontWeight: '500',
     },
     chipTextActive: {
+        color: Colors.primary,
+        fontWeight: '700',
+    },
+    categoryTotalBanner: {
+        marginHorizontal: Spacing.md,
+        marginBottom: Spacing.sm,
+        backgroundColor: Colors.primary + '12',
+        borderRadius: BorderRadius.md,
+        paddingVertical: Spacing.sm,
+        paddingHorizontal: Spacing.md,
+        borderWidth: 1,
+        borderColor: Colors.primary + '25',
+    },
+    categoryTotalText: {
+        color: Colors.textSecondary,
+        fontSize: FontSize.sm,
+        fontWeight: '500',
+    },
+    categoryTotalAmount: {
         color: Colors.primary,
         fontWeight: '700',
     },

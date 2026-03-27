@@ -8,6 +8,8 @@ from analytics import analyze_transactions
 from categorize import categorize_merchant
 import os
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "database.db")
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -22,8 +24,7 @@ app.add_middleware(
 # ==============================
 
 def init_db():
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    DB_PATH = os.path.join(BASE_DIR, "database.db")
+
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
@@ -62,7 +63,7 @@ class Payment(BaseModel):
 @app.post("/pay")
 def add_payment(payment: Payment):
     category = categorize_merchant(payment.merchant_name)
-
+    category = category.lower().strip()
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
 
@@ -96,8 +97,13 @@ def add_payment(payment: Payment):
 
 @app.get("/transactions")
 def get_transactions():
-    conn = sqlite3.connect("database.db")
-    df = pd.read_sql_query("SELECT * FROM transactions", conn)
+    conn = sqlite3.connect(DB_PATH)
+
+    df = pd.read_sql_query(
+        "SELECT * FROM transactions ORDER BY timestamp DESC",
+        conn
+    )
+
     conn.close()
 
     if df.empty:
@@ -110,9 +116,9 @@ def get_transactions():
         result.append({
             "id": row["id"],
             "merchant": row["merchant_name"],
-            "amount": row["amount"],
+            "amount": float(row["amount"]),
             "date": row["timestamp"].strftime("%Y-%m-%d"),
-            "category": row["category"].capitalize(),
+            "category": row["category"].strip().title(),   # 🔥 IMPORTANT FIX
             "payment_method": row["payment_method"]
         })
 
@@ -140,6 +146,9 @@ def get_dashboard():
         }
 
     df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+    df["category"] = df["category"].str.lower().str.strip()
+
 
     # 🔥 CORE AI ANALYSIS
     analysis = analyze_transactions(df)

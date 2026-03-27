@@ -4,9 +4,9 @@ import { Platform } from 'react-native';
 // Android emulator uses 10.0.2.2 to reach host localhost
 // iOS simulator and web can use localhost directly
 const BASE_URL = Platform.select({
-    android: 'http://192.168.1.5:8000',
-    ios: 'http://192.168.1.5:8000',
-    default: 'http://192.168.1.5:8000',
+    android: 'http://172.20.10.4:8000',
+    ios: 'http://172.20.10.4:8000',
+    default: 'http://172.20.10.4:8000',
 });
 
 const api = axios.create({

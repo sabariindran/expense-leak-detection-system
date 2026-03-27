@@ -12,7 +12,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, BorderRadius, FontSize, Shadows } from '../../constants/theme';
-import { getDashboard, DashboardData } from '../../services/api';
+import { getDashboard, getTransactions, DashboardData, Alert as ApiAlert, Transaction } from '../../services/api';
+import { generateAlerts, getTopCategory } from '../../services/alertEngine';
 import StatCard from '../../components/StatCard';
 import AlertCard from '../../components/AlertCard';
 
@@ -20,6 +21,8 @@ const { width } = Dimensions.get('window');
 
 export default function DashboardScreen() {
   const [data, setData] = useState<DashboardData | null>(null);
+  const [smartAlerts, setSmartAlerts] = useState<ApiAlert[]>([]);
+  const [topCategory, setTopCategory] = useState<{ category: string; amount: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [userName, setUserName] = useState('User');
@@ -40,8 +43,18 @@ export default function DashboardScreen() {
   const fetchDashboard = async () => {
     try {
       setError('');
-      const result = await getDashboard();
-      setData(result);
+      const [dashResult, txns] = await Promise.all([
+        getDashboard(),
+        getTransactions(),
+      ]);
+      setData(dashResult);
+
+      // Generate intelligent alerts from transactions
+      const alerts = generateAlerts(txns);
+      setSmartAlerts(alerts);
+
+      // Compute top spending category
+      setTopCategory(getTopCategory(txns));
     } catch (err: any) {
       setError('Could not connect to server. Make sure the backend is running.');
     } finally {
@@ -108,6 +121,24 @@ export default function DashboardScreen() {
             gradient={Colors.gradientCard}
           />
           <StatCard
+            icon="📂"
+            label="Top Category"
+            value={topCategory?.category ?? '—'}
+            gradient={Colors.gradientCard}
+          />
+        </View>
+
+        <View style={styles.statsRow}>
+          <StatCard
+            icon="🔔"
+            label="Active Alerts"
+            value={String(smartAlerts.length)}
+            gradient={Colors.gradientCard}
+            textColor={
+              smartAlerts.length > 0 ? Colors.danger : Colors.success
+            }
+          />
+          <StatCard
             icon="⚡"
             label="Habit Score"
             value={`${data?.habit_score ?? 0}/100`}
@@ -122,23 +153,16 @@ export default function DashboardScreen() {
           />
         </View>
 
-        <View style={styles.statsRow}>
-          <StatCard
-            icon="🔔"
-            label="Active Alerts"
-            value={String(data?.active_alerts ?? 0)}
-            gradient={Colors.gradientCard}
-            textColor={
-              (data?.active_alerts ?? 0) > 0 ? Colors.danger : Colors.success
-            }
-          />
-          <StatCard
-            icon="📊"
-            label="Merchants"
-            value={String(data?.spending_by_merchant?.length ?? 0)}
-            gradient={Colors.gradientCard}
-          />
-        </View>
+        {/* Summary Insight */}
+        {topCategory && (
+          <View style={styles.insightCard}>
+            <Text style={styles.insightText}>
+              📌 Your highest spending this month is on{' '}
+              <Text style={styles.insightHighlight}>{topCategory.category}</Text>
+              {' '}(₹{Math.round(topCategory.amount).toLocaleString('en-IN')}).
+            </Text>
+          </View>
+        )}
 
         {/* Spending by Merchant - Bar Chart */}
         {data?.spending_by_merchant && data.spending_by_merchant.length > 0 && (
@@ -217,10 +241,10 @@ export default function DashboardScreen() {
         {/* Alerts */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>
-            🚨 Alerts ({data?.alerts?.length ?? 0})
+            🚨 Alerts ({smartAlerts.length})
           </Text>
-          {data?.alerts && data.alerts.length > 0 ? (
-            data.alerts.map((alert, index) => (
+          {smartAlerts.length > 0 ? (
+            smartAlerts.map((alert, index) => (
               <AlertCard
                 key={index}
                 type={alert.type}
@@ -390,6 +414,23 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xs,
     color: Colors.textMuted,
     marginTop: 4,
+  },
+  insightCard: {
+    backgroundColor: Colors.primary + '12',
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.primary + '25',
+  },
+  insightText: {
+    color: Colors.textSecondary,
+    fontSize: FontSize.sm,
+    lineHeight: 20,
+  },
+  insightHighlight: {
+    color: Colors.primary,
+    fontWeight: '700',
   },
   emptyCard: {
     backgroundColor: Colors.surface,

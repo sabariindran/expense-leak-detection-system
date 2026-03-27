@@ -300,7 +300,7 @@ export default function ScanScreen() {
                                     <Text style={{ fontSize: 40 }}>✅</Text>
                                 </View>
                                 <Text style={styles.billTitle}>Bill Scanned</Text>
-                                <Text style={styles.billDesc}>Review and confirm the detected details</Text>
+                                <Text style={styles.billDesc}>Please verify the detected details before saving.</Text>
                             </View>
 
                             <View style={styles.billConfirmCard}>
